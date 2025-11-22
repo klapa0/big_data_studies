@@ -1,4 +1,3 @@
-
 #include <bits/stdc++.h>
 using namespace std;
 
@@ -9,12 +8,16 @@ struct CSR {
     vector<double> val;
 };
 
-struct BucketCSR {
+struct BucketCSR_Compact {
     int nrows, ncols;
     int cb;
     int nblocks;
-    vector<vector<pair<int,int>>> buckets;
-    vector<vector<double>> vals;
+    
+    vector<int> b_ptr; 
+    
+    vector<int> row_indices; 
+    vector<int> col_indices; 
+    vector<double> val_data;
 };
 
 inline CSR load_mtx(const string &filename)
@@ -72,38 +75,59 @@ inline void spmv_naive_csr(const CSR &A, const vector<double> &x, vector<double>
     }
 }
 
-inline BucketCSR build_blocked_csr(const CSR &A, int cb = 128)
+inline BucketCSR_Compact build_blocked_csr_compact(const CSR &A, int cb = 128)
 {
-    BucketCSR B;
+    BucketCSR_Compact B;
     B.nrows = A.nrows;
     B.ncols = A.ncols;
     B.cb = cb;
     B.nblocks = (A.ncols + cb - 1) / cb;
 
-    B.buckets.resize(B.nblocks);
-    B.vals.resize(B.nblocks);
+    vector<int> block_sizes(B.nblocks, 0);
+    for(int k=0; k < A.val.size(); k++){
+        int c = A.col[k];
+        int b = c / cb;
+        block_sizes[b]++;
+    }
 
+    B.b_ptr.assign(B.nblocks + 1, 0);
+    for(int b=0; b < B.nblocks; b++){
+        B.b_ptr[b+1] = B.b_ptr[b] + block_sizes[b];
+    }
+
+    size_t nnz = A.val.size();
+    B.row_indices.resize(nnz);
+    B.col_indices.resize(nnz);
+    B.val_data.resize(nnz);
+    
+    vector<int> current_idx(B.nblocks, 0); 
+    
     for(int i=0;i<A.nrows;i++){
         for(int k=A.ptr[i]; k<A.ptr[i+1]; k++){
             int c = A.col[k];
             int b = c / cb;
-            B.buckets[b].push_back({i,c});
-            B.vals[b].push_back(A.val[k]);
+            
+            int dst = B.b_ptr[b] + current_idx[b]++;
+            
+            B.row_indices[dst] = i;
+            B.col_indices[dst] = c;
+            B.val_data[dst] = A.val[k];
         }
     }
+
     return B;
 }
 
-inline void spmv_blocked_run(const BucketCSR &B, const vector<double> &x, vector<double> &y)
+inline void spmv_compact_run(const BucketCSR_Compact &B, const vector<double> &x, vector<double> &y)
 {
     fill(y.begin(), y.end(), 0.0);
 
     for(int b=0; b < B.nblocks; b++){
-        const auto &Buck = B.buckets[b];
-        const auto &V = B.vals[b];
+        int start = B.b_ptr[b];
+        int end = B.b_ptr[b+1];
         
-        for(size_t j=0; j < Buck.size(); j++) {
-            y[Buck[j].first] += V[j] * x[Buck[j].second];
+        for(int j=start; j < end; j++) {
+            y[B.row_indices[j]] += B.val_data[j] * x[B.col_indices[j]];
         }
     }
 }
