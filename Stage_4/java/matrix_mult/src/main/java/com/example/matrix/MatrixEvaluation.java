@@ -6,78 +6,99 @@ import java.util.Random;
 public class MatrixEvaluation {
 
     public static void main(String[] args) throws Exception {
-        // Rozmiary testowe
-        int[] sizes = {10, 100, 1000}; // zaczynamy od małych, potem 100, potem x10
-        int repetitions = 3; // średnia z kilku powtórzeń
+        // More comprehensive range of sizes
+        int[] sizes = {100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,10000}; 
+        int repetitions = 5;
+        int warmup_repetitions = 2;
+
+        System.out.println("--- Starting Distributed Matrix Multiplication Benchmark ---");
 
         for (int N : sizes) {
-            int blockSize = Math.max(1, N / 2); // np. 2 bloki na wymiar
-            int gridDim = N / blockSize;
+            // Ensure blockSize creates a reasonable grid (e.g., at least 2x2)
+            int gridDim = Math.max(2, N / 100);
+            int blockSize = N / gridDim;
 
-            System.out.println("\n--- Distributed Matrix Multiplication Evaluation ---");
-            System.out.println("Matrix Size: " + N + "x" + N);
-            System.out.println("Block Size: " + blockSize);
-            System.out.println("Grid Dimension: " + gridDim + "x" + gridDim);
+            System.out.println("\n--- Evaluation for N = " + N + " ---");
+            System.out.println("Config: Grid " + gridDim + "x" + gridDim + ", Block Size: " + blockSize);
+
+            // 1. GENERATE DATA ONCE for all repetitions of this size
+            String inputFile = "input_data_N" + N + ".txt";
+            generateTestData(inputFile, N, blockSize);
 
             double totalTime = 0;
 
-            for (int rep = 1; rep <= repetitions; rep++) {
-                System.out.println("\nRun " + rep + " of " + repetitions);
+            for (int rep = 1; rep <= (repetitions + warmup_repetitions); rep++) {
+                String outputDir = "output_N" + N + "_rep" + rep;
+                deleteFileOrDirectory(new File(outputDir));
 
-                String inputFile = "input_matrix_" + N + ".txt";
-                String outputDir = "output_matrix_" + N;
-
-                generateData(inputFile, N, blockSize);
-
-                File outDir = new File(outputDir);
-                if (outDir.exists()) deleteDirectory(outDir);
+                boolean isWarmup = (rep <= warmup_repetitions);
+                if (isWarmup) {
+                    System.out.print("Warmup run " + rep + "/" + warmup_repetitions + "... ");
+                } else {
+                    System.out.print("Measured run " + (rep - warmup_repetitions) + "/" + repetitions + "... ");
+                }
 
                 long start = System.currentTimeMillis();
                 try {
-                    BlockMatrixMulJob.runJob(inputFile, outputDir, gridDim);
+                    BlockMatrixMulJob.runJob(inputFile, outputDir, N, gridDim);
                 } catch (Exception e) {
-                    System.err.println("Hadoop execution failed.");
+                    System.err.println("\nJob failed at N=" + N);
                     e.printStackTrace();
                     return;
                 }
                 long end = System.currentTimeMillis();
 
                 long elapsed = end - start;
-                totalTime += elapsed;
-                System.out.println("Execution Time: " + elapsed + " ms");
+                System.out.println(elapsed + " ms");
 
-                // Cleanup
-                new File(inputFile).delete();
-                deleteDirectory(outDir);
+                if (!isWarmup) {
+                    totalTime += elapsed;
+                }
+
+                // Cleanup output but KEEP input for next repetition
+                deleteFileOrDirectory(new File(outputDir));
             }
 
+            // Final cleanup for this N
+            new File(inputFile).delete();
+
             double avgTime = totalTime / repetitions;
-            System.out.println("\nAverage Execution Time for " + N + "x" + N + ": " + avgTime + " ms");
+            System.out.println(">>> Average Time for " + N + "x" + N + " (excluding warmup): " + String.format("%.2f", avgTime) + " ms");
         }
     }
 
-    private static void generateData(String filename, int N, int blockSize) throws IOException {
-        BufferedWriter writer = new BufferedWriter(new FileWriter(filename));
-        Random rand = new Random();
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                if (rand.nextDouble() > 0.8) {
-                    int bRow = i / blockSize;
-                    int bCol = j / blockSize;
-                    double val = Math.round(rand.nextDouble() * 10);
-
-                    writer.write(String.format("A,%d,%d,%d,%d,%.2f\n", bRow, bCol, i % blockSize, j % blockSize, val));
-                    writer.write(String.format("B,%d,%d,%d,%d,%.2f\n", bRow, bCol, i % blockSize, j % blockSize, val));
+    private static void generateTestData(String filename, int N, int blockSize) throws IOException {
+        System.out.print("Generating input data (" + N + "x" + N + ")... ");
+        long start = System.currentTimeMillis();
+        
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename))) {
+            Random rand = new Random();
+            for (int i = 0; i < N; i++) {
+                for (int j = 0; j < N; j++) {
+                    if (rand.nextDouble() > 0.8) { // 20% density
+                        int bRow = i / blockSize;
+                        int bCol = j / blockSize;
+                        double val = 1.0 + (rand.nextDouble() * 9.0); // Values between 1 and 10
+                        
+                        // Use StringBuilder for better performance inside loops
+                        writer.write("A," + bRow + "," + bCol + "," + (i % blockSize) + "," + (j % blockSize) + "," + String.format("%.2f", val) + "\n");
+                        writer.write("B," + bRow + "," + bCol + "," + (i % blockSize) + "," + (j % blockSize) + "," + String.format("%.2f", val) + "\n");
+                    }
                 }
             }
         }
-        writer.close();
+        System.out.println("Done in " + (System.currentTimeMillis() - start) + " ms.");
     }
 
-    private static void deleteDirectory(File file) {
-        if (file.isDirectory()) {
-            for (File f : file.listFiles()) deleteDirectory(f);
+    private static void deleteFileOrDirectory(File file) {
+        if (file.exists()) {
+            if (file.isDirectory()) {
+                File[] contents = file.listFiles();
+                if (contents != null) {
+                    for (File f : contents) deleteFileOrDirectory(f);
+                }
+            }
+            file.delete();
         }
-        file.delete();
     }
 }

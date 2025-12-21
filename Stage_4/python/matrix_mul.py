@@ -34,38 +34,43 @@ class MRMatrixMultiplication(MRJob):
                 yield (i, block_col), ('B', block_row, inner_row, inner_col, value)
 
     def reducer(self, key, values):
-        # Key is (BlockRow_C, BlockCol_C)
-        # We need to reconstruct the blocks and multiply
-        
-        list_A = []
-        list_B = []
+        # Key: (BlockRow_C, BlockCol_C)
+        # Separate entries for A and B blocks
+        blocks_A = {} # k -> list of (row, col, val)
+        blocks_B = {} # k -> list of (row, col, val)
 
         for val in values:
-            if val[0] == 'A':
-                list_A.append(val)
+            m_type, k, r, c, v = val[0], val[1], val[2], val[3], val[4]
+            if m_type == 'A':
+                if k not in blocks_A: blocks_A[k] = []
+                blocks_A[k].append((r, c, v))
             else:
-                list_B.append(val)
+                if k not in blocks_B: blocks_B[k] = []
+                blocks_B[k].append((r, c, v))
 
-        # Naive local multiplication of the collected entries
-        # In a real block algorithm, we would build dense numpy arrays here
-        
-        block_res = {} # (row, col) -> sum
+        # Result storage for the block
+        # We use a dictionary to keep it sparse and avoid huge memory allocation
+        res = {}
 
-        for a in list_A:
-            # a = ('A', k, row, col, val)
-            k_a, r_a, c_a, v_a = a[1], a[2], a[3], a[4]
-            
-            for b in list_B:
-                # b = ('B', k, row, col, val)
-                k_b, r_b, c_b, v_b = b[1], b[2], b[3], b[4]
+        # Optimization: Only iterate over k that exist in both matrices
+        common_ks = set(blocks_A.keys()) & set(blocks_B.keys())
 
-                if k_a == k_b and c_a == r_b: # If column of A matches row of B
-                    if (r_a, c_b) not in block_res:
-                        block_res[(r_a, c_b)] = 0.0
-                    block_res[(r_a, c_b)] += v_a * v_b
+        for k in common_ks:
+            # Group block B entries by row to avoid O(N^2) search
+            # B_grouped: row_index -> list of (col_index, value)
+            B_grouped = {}
+            for rb, cb, vb in blocks_B[k]:
+                if rb not in B_grouped: B_grouped[rb] = []
+                B_grouped[rb].append((cb, vb))
 
-        # Emit the non-zero cells of the resulting block C
-        for (r, c), v in block_res.items():
+            # Multiply A and B for this k
+            for ra, ca, va in blocks_A[k]:
+                if ca in B_grouped: # This is the "match" (column A == row B)
+                    for cb, vb in B_grouped[ca]:
+                        pos = (ra, cb)
+                        res[pos] = res.get(pos, 0.0) + (va * vb)
+
+        for (r, c), v in res.items():
             yield key, (r, c, v)
 
 if __name__ == '__main__':
